@@ -1,0 +1,10 @@
+[package]
+org = "Kalhara_JA"
+name = "geronimo_2_0"
+version = "0.1.0"
+
+[[dependency]]
+org = "ballerinax"
+name = "googleapis.drive"
+version = "3.3.0"
+repository = "local"
