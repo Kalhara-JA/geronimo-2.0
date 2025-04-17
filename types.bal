@@ -46,6 +46,8 @@ public type ProcessingResult record {|
     string fileId;
     // Name of the processed file
     string fileName;
+    //WebViewLink
+    string fileLink;
     // Whether the processing was successful
     boolean success;
     // Error message if processing failed
@@ -73,3 +75,19 @@ public type MarkdownChunk record {|
     // Additional metadata
     DocumentMetadata metadata;
 |};
+
+# Represents an embedding response from the Azure OpenAI API
+#
+# + data - field description
+type EmbeddingResponse record {
+    EmebeddingData[] data;
+};
+
+# Represents the data structure for embedding response
+#
+# + index - field description
+# + embedding - field description
+type EmebeddingData record {
+    int index;
+    float[] embedding;
+};

@@ -1,34 +1,65 @@
 // Copyright (c) 2024, WSO2 LLC. (http://www.wso2.org) All Rights Reserved.
 
-import ballerina/io;
+import ballerina/http;
 import ballerinax/googleapis.drive as drive;
 
-# Main function to execute the document processing pipeline
-# + return - Error if processing fails
-public function main() returns error? {
-    // Retrieve all documents from Google Drive
-    stream<drive:File> documentStream = check retrieveAllDocuments();
+listener http:Listener httpDefaultListener = http:getDefaultListener();
 
-    // Process each document and collect results
-    ProcessingResult[] results = [];
-    from drive:File driveFile in documentStream
-    do {
-        io:println("Processing file: ", driveFile);
-        //process each file
-        ProcessingResult|error result = processDocument(driveFile);
-        if (result is error) {
-            io:println("Error processing file: ", driveFile.name, " Error: ", result);
-            return result;
-        }
-        results.push(result);
-    };
+service /vectorize on httpDefaultListener {
 
-    // Print processing results
-    foreach ProcessingResult result in results {
-        if result.success {
-            io:println("Successfully processed: ", result.fileName);
-        } else {
-            io:println("Failed to process: ", result.fileName, " Error: ", result.errorMessage);
+    resource function post init() returns error|json {
+
+        // Retrieve all documents from Google Drive
+        stream<drive:File> documentStream = check retrieveAllDocuments();
+
+        // Declare a variable to hold the results
+        ProcessingResult[] results = [];
+
+        // Iterate over each file in the stream
+        foreach drive:File driveFile in documentStream {
+
+            // Extract metadata
+            DocumentMetadata metadata = check extractMetadata(driveFile);
+
+            // Initialize result record
+            ProcessingResult result = {
+                fileId: metadata.fileId,
+                fileName: metadata.fileName,
+                fileLink: metadata.webViewLink,
+                success: false,
+                errorMessage: ()
+            };
+
+            // Extract file content
+            string extractedContent = check extractContent(metadata.fileId, metadata.fileName);
+
+            // Chunk the extracted content
+            MarkdownChunk[] chunks = chunkMarkdownText(extractedContent, metadata, maxTokens = 400, overlapTokens = 50);
+
+            // Iterate over each chunk and get embeddings
+            foreach MarkdownChunk chunk in chunks {
+                // Get embeddings for each chunk
+                float[] embeddings = check getEmbedding(chunk.content);
+
+                // Store in vector store
+                _ = check vectorStore.addVector({
+                    embedding: embeddings,
+                    document: chunk.metadata.webViewLink,
+                    metadata
+                }, chunk.metadata.fileId);
+
+            }
+            // Update result record
+            result.success = true;
         }
+
+        // Create a response object
+        json response = {
+            message: "Documents processed successfully",
+            results: results
+        };
+
+        // Return the response
+        return response;
     }
 }

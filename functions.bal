@@ -12,7 +12,7 @@ public function retrieveAllDocuments() returns stream<drive:File>|error {
     return driveClient->getAllFiles(filterString);
 }
 
-# Processes a single Google Drive document
+# Processes a single Google Drive document(Temporary for testing)
 # + driveFile - Google Drive file to process
 # + return - Processing result containing success status and error details if any
 public function processDocument(drive:File driveFile) returns ProcessingResult|error {
@@ -20,32 +20,20 @@ public function processDocument(drive:File driveFile) returns ProcessingResult|e
     string fileId = driveFile.id ?: "";
     string fileName = driveFile.name ?: "";
 
-    drive:File|error file = check driveClient->getFile(fileId, fields = "id,name,mimeType,createdTime,webViewLink");
-    if (file is error) {
-        return error("Failed to retrieve file: " + fileId);
-    }
-
-    // Extract metadata
-    // Define metadata record
-    DocumentMetadata metadata = {
-        fileId: file.id ?: "",
-        fileName: file.name ?: "",
-        mimeType: file.mimeType ?: "",
-        createdTime: file.createdTime ?: "",
-        webViewLink: file.webViewLink ?: ""
-    };
-
-    io:println("File Metadata: ", metadata);
-
     // Initialize result record
     ProcessingResult result = {
         fileId: fileId,
         fileName: fileName,
+        fileLink: driveFile.webViewLink ?: "",
         success: false,
         errorMessage: ()
     };
 
     do {
+        // Extract metadata
+        DocumentMetadata metadata = check extractMetadata(driveFile);
+        io:println("File Metadata: ", metadata);
+
         // Extract and save content
         string extractedContent = check extractContent(fileId, fileName);
 
@@ -67,12 +55,51 @@ public function processDocument(drive:File driveFile) returns ProcessingResult|e
         }
         io:println("Saved chunks to: ", chunkFilePath);
 
+        // Get embeddings for each chunk
+        foreach MarkdownChunk chunk in chunks {
+            float[] embeddings = check getEmbedding(chunk.content);
+            // Save the embedding to the database (not implemented here)
+            // saveEmbeddingToDatabase(chunk, embedding);
+            if embeddings is float[] {
+                // Store in vector store
+                _ = check vectorStore.addVector({
+                            embedding: embeddings,
+                            document: chunk.metadata.webViewLink,
+                            metadata
+                        }, chunk.metadata.fileId);
+            }
+        }
+
         result.success = true;
     } on fail var e {
         result.errorMessage = e.message();
     }
 
     return result;
+}
+
+# extracts metadata from a Google Drive file
+# + driveFile - Google Drive file to extract metadata from
+# + return - DocumentMetadata record or error if extraction fails
+public function extractMetadata(drive:File driveFile) returns DocumentMetadata|error {
+    // Extract metadata from the drive file
+    string fileId = driveFile.id ?: "";
+
+    drive:File|error file = check driveClient->getFile(fileId, fields = "id,name,mimeType,createdTime,webViewLink");
+    if (file is error) {
+        return error("Failed to retrieve file: " + fileId);
+    }
+
+    // Define metadata record
+    DocumentMetadata metadata = {
+        fileId: file.id ?: "",
+        fileName: file.name ?: "",
+        mimeType: file.mimeType ?: "",
+        createdTime: file.createdTime ?: "",
+        webViewLink: file.webViewLink ?: ""
+    };
+
+    return metadata;
 }
 
 # Extracts content from a Google Drive file and saves it as markdown
@@ -262,4 +289,13 @@ function extractHeading(string line) returns [boolean, int, string] {
         }
     }
     return [false, 0, ""];
+}
+
+function getEmbedding(string chunk) returns float[]|error {
+    EmbeddingResponse response = check embeddings->post(
+        string `/deployments/${azureOpenaiEmbeddingName}/embeddings?api-version=${azureOpenaiApiVersion}`,
+        {"input": chunk},
+        {"api-key": azureOpenaiApiKey}
+    );
+    return response.data[0].embedding;
 }
