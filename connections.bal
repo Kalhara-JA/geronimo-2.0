@@ -4,7 +4,7 @@ import geronimo_2_0.db;
 
 import ballerina/http;
 import ballerinax/googleapis.drive as drive;
-// import ballerinax/postgresql;
+import ballerinax/postgresql;
 import ballerinax/postgresql.driver as _;
 import ballerinax/postgresql.driver as _;
 
@@ -30,12 +30,12 @@ final pgvector:VectorStore vectorStore = check new ({
         database: driveDbDatabaseName,
         port: driveDbPort
     },
-    vectorDimension = embeddingSize, connectionPool = {maxOpenConnections: maxOpenConnections}
-// options = {
-//     ssl: {
-//         mode: postgresql:DISABLE
-//     }
-// }
+    vectorDimension = embeddingSize, connectionPool = {maxOpenConnections: maxOpenConnections},
+    options = {
+        ssl: {
+            mode: postgresql:DISABLE
+        }
+}
 );
 // final postgresql:Client postgresqlClient = check new (
 //     driveDbHostname,

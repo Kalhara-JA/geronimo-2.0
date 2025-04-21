@@ -8,10 +8,21 @@ import ballerina/time;
 import ballerinax/googleapis.drive as drive;
 
 # Retrieves all documents from Google Drive based on specific criteria
+#
+# + searchTerms - parameter description
 # + return - Stream of Google Drive files or error if retrieval fails
-public function retrieveAllDocuments() returns stream<drive:File>|error {
-    // Filter string to get specific documents from a folder
-    string filterString = "'1QtYURKBwGsJHoyBh5dLXOZ1ifYXODuTq' in parents and fullText contains 'Attendees' and mimeType = 'application/vnd.google-apps.document'";
+public function retrieveAllDocuments(string[] searchTerms) returns stream<drive:File>|error {
+    string folderId = "1QtYURKBwGsJHoyBh5dLXOZ1ifYXODuTq";
+    string mimeType = "application/vnd.google-apps.document";
+
+    // Build the fullText filter using 'or' between each term
+    string[] searchFilters = searchTerms.map(term => "fullText contains '" + term + "'");
+    string searchFilter = string `${string:'join(" or ", ...searchFilters)}`;
+
+    // Final filter string with folder and mime type constraints
+    string filterString = "'" + folderId + "' in parents and " + searchFilter + " and mimeType = '" + mimeType + "'";
+    io:println("Filter String: ", filterString);
+
     return driveClient->getAllFiles(filterString);
 }
 
@@ -34,7 +45,7 @@ public function processDocument(drive:File driveFile) returns ProcessingResult|e
 
     do {
         // Extract metadata
-        DocumentMetadata metadata = check extractMetadata(driveFile);
+        DocumentMetadata metadata = check extractMetadata(driveFile.id ?: "");
         io:println("File Metadata: ", metadata);
 
         // Extract and save content
@@ -62,32 +73,30 @@ public function processDocument(drive:File driveFile) returns ProcessingResult|e
         foreach MarkdownChunk chunk in chunks {
             float[] embeddings = check getEmbedding(chunk.content);
             // Save the embedding to the database (not implemented here)
-            // saveEmbeddingToDatabase(chunk, embedding);
-            if embeddings is float[] {
-                // Store in vector store
-                _ = check vectorStore.addVector({
+            _ = check vectorStore.addVector({
                             embedding: embeddings,
-                            document: chunk.metadata.webViewLink,
+                            document: chunk.metadata.webViewLink ?: "",
                             metadata
                         }, driveCollectionName);
-            }
+
         }
 
         result.success = true;
-    } on fail var e {
+    }
+
+on fail var e {
         result.errorMessage = e.message();
     }
 
     return result;
+
 }
 
 # extracts metadata from a Google Drive file
-# + driveFile - Google Drive file to extract metadata from
+# + fileId - ID of the file to extract metadata from
 # + return - DocumentMetadata record or error if extraction fails
-public function extractMetadata(drive:File driveFile) returns DocumentMetadata|error {
+public function extractMetadata(string fileId) returns DocumentMetadata|error {
     // Extract metadata from the drive file
-    string fileId = driveFile.id ?: "";
-
     drive:File|error file = check driveClient->getFile(fileId, fields = "id,name,mimeType,createdTime,webViewLink");
     if (file is error) {
         return error("Failed to retrieve file: " + fileId);
@@ -369,20 +378,20 @@ public function saveToken(string token) returns int|error {
 
 # Description.
 # + return - return value description
-public function getToken() returns db:Token|error {
+public function getToken() returns string|error {
     int id = 1;
     db:Token|error token = check dbClient->/tokens/[id].get();
     if token is error {
         return error("Failed to retrieve token");
     }
-    return token;
+    return token.token;
 }
 
 # Description.
 #
 # + token - parameter description
 # + return - return value description
-public function updateToken(string token) returns db:Token|error {
+public function updateToken(string token) returns string|error {
     int id = 1;
     db:TokenUpdate tokenUpdate = {
         token: token,
@@ -393,5 +402,5 @@ public function updateToken(string token) returns db:Token|error {
     if updatedToken is error {
         return error("Failed to update token");
     }
-    return updatedToken;
+    return updatedToken.token;
 }

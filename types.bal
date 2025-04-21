@@ -15,13 +15,13 @@ public type DocumentMetadata record {|
     // Unique identifier of the file in Google Drive
     string fileId;
     // Name of the file
-    string fileName;
+    string fileName?;
     // MIME type of the file
-    string mimeType;
+    string mimeType?;
     // Creation timestamp of the file
-    string createdTime;
+    string createdTime?;
     // Web view link to access the file
-    string webViewLink;
+    string webViewLink?;
     // Size of the file in bytes
     int size?;
 |};
