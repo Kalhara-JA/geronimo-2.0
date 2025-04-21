@@ -1,7 +1,10 @@
 // Copyright (c) 2024, WSO2 LLC. (http://www.wso2.org) All Rights Reserved.
 
+import geronimo_2_0.db;
+
 import ballerina/io;
 import ballerina/regex;
+import ballerina/time;
 import ballerinax/googleapis.drive as drive;
 
 # Retrieves all documents from Google Drive based on specific criteria
@@ -66,7 +69,7 @@ public function processDocument(drive:File driveFile) returns ProcessingResult|e
                             embedding: embeddings,
                             document: chunk.metadata.webViewLink,
                             metadata
-                        }, chunk.metadata.fileId);
+                        }, driveCollectionName);
             }
         }
 
@@ -291,6 +294,9 @@ function extractHeading(string line) returns [boolean, int, string] {
     return [false, 0, ""];
 }
 
+# Retrieves embeddings for a given text chunk
+# + chunk - Text chunk to get embeddings for
+# + return - Array of float embeddings or error if retrieval fails
 function getEmbedding(string chunk) returns float[]|error {
     EmbeddingResponse response = check embeddings->post(
         string `/deployments/${azureOpenaiEmbeddingName}/embeddings?api-version=${azureOpenaiApiVersion}`,
@@ -298,4 +304,94 @@ function getEmbedding(string chunk) returns float[]|error {
         {"api-key": azureOpenaiApiKey}
     );
     return response.data[0].embedding;
+}
+
+# Fetch existing vectors based on metadata
+#
+# + metadata - parameter description
+# + collectionName - parameter description
+# + return - return value description
+public function fetchExistingVectors(DocumentMetadata metadata, string collectionName)
+    returns VectorDataWithId[]|error
+{
+    return vectorStore.fetchVectorByMetadata(metadata, collectionName);
+}
+
+# Delete existing vectors based on metadata
+#
+# + metadata - parameter description
+# + collectionName - parameter description
+# + return - return value description
+public function deleteExistingVectors(DocumentMetadata metadata, string collectionName)
+    returns int|error
+{
+    return vectorStore.deleteVectorsByMetadata(metadata, collectionName);
+}
+
+# Add a vector entry to the vector store
+#
+# + embedding - parameter description
+# + documentLink - parameter description
+# + metadata - parameter description
+# + collectionName - parameter description
+# + return - return value description
+public function addVectorEntry(float[] embedding, string documentLink, DocumentMetadata metadata,
+        string collectionName)
+    returns VectorDataWithId|error
+{
+    return vectorStore.addVector({
+        embedding: embedding,
+        document: documentLink,
+        metadata: metadata
+    }, collectionName);
+}
+
+# Description.
+#
+# + token - parameter description
+# + return - return value description
+public function saveToken(string token) returns int|error {
+    db:TokenInsert tokenInsert = {
+        token: token,
+        createdAt: time:utcNow(),
+        updatedAt: time:utcNow()
+};
+
+    int[] result = check dbClient->/tokens.post(
+        [tokenInsert]
+    );
+    if result.length() > 0 {
+        return result[0];
+    } else {
+        return error("Failed to save token");
+    }
+}
+
+# Description.
+# + return - return value description
+public function getToken() returns db:Token|error {
+    int id = 1;
+    db:Token|error token = check dbClient->/tokens/[id].get();
+    if token is error {
+        return error("Failed to retrieve token");
+    }
+    return token;
+}
+
+# Description.
+#
+# + token - parameter description
+# + return - return value description
+public function updateToken(string token) returns db:Token|error {
+    int id = 1;
+    db:TokenUpdate tokenUpdate = {
+        token: token,
+        updatedAt: time:utcNow()
+    };
+
+    db:Token|error updatedToken = check dbClient->/tokens/[id].put(tokenUpdate);
+    if updatedToken is error {
+        return error("Failed to update token");
+    }
+    return updatedToken;
 }

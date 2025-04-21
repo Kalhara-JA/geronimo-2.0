@@ -1,7 +1,13 @@
 // Copyright (c) 2024, WSO2 LLC. (http://www.wso2.org) All Rights Reserved.
 
+import geronimo_2_0.db;
+
 import ballerina/http;
 import ballerinax/googleapis.drive as drive;
+// import ballerinax/postgresql;
+import ballerinax/postgresql.driver as _;
+import ballerinax/postgresql.driver as _;
+
 // import ballerinax/postgresql;
 
 import wso2/pgvector;
@@ -25,9 +31,18 @@ final pgvector:VectorStore vectorStore = check new ({
         port: driveDbPort
     },
     vectorDimension = embeddingSize, connectionPool = {maxOpenConnections: maxOpenConnections}
-    // options = {
-    //     ssl: {
-    //         mode: postgresql:DISABLE
-    //     }
-    // }
+// options = {
+//     ssl: {
+//         mode: postgresql:DISABLE
+//     }
+// }
 );
+// final postgresql:Client postgresqlClient = check new (
+//     driveDbHostname,
+//     driveDbUsername,
+//     driveDbPassword,
+//     driveDbDatabaseName,
+//     driveDbPort
+// );
+
+final db:Client dbClient = check new ();

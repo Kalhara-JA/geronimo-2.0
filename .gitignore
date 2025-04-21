@@ -2,4 +2,4 @@ config.bal
 markdown_files
 .vscode
 target
-Dependencies.toml
+config.toml

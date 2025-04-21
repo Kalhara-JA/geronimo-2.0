@@ -91,3 +91,14 @@ type EmebeddingData record {
     int index;
     float[] embedding;
 };
+
+public type VectorData record {|
+    float[] embedding; // Vector embedding
+    string document; // Associated document text
+    map<json> metadata?; // Optional metadata
+|};
+
+public type VectorDataWithId record {|
+    int id;
+    *VectorData;
+|};

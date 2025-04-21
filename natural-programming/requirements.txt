@@ -1,0 +1,1 @@
+generate code for the use-case: create functions for save latest token in the db and fetch last saved token from db

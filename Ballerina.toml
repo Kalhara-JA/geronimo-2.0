@@ -8,3 +8,10 @@ org = "ballerinax"
 name = "googleapis.drive"
 version = "3.3.0"
 repository = "local"
+
+[[platform.java21.dependency]]
+groupId = "io.ballerina.stdlib"
+artifactId = "persist.sql-native"
+version = "1.6.0"
+
+
