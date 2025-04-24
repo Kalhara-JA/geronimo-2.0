@@ -41,7 +41,7 @@ public type Token record {|
     readonly int id;
     string token;
     time:Utc? createdAt;
-    time:Utc? updatedAt;
+    time:Utc updatedAt;
 |};
 
 public type TokenOptionalized record {|
@@ -56,12 +56,12 @@ public type TokenTargetType typedesc<TokenOptionalized>;
 public type TokenInsert record {|
     string token;
     time:Utc? createdAt;
-    time:Utc? updatedAt;
+    time:Utc updatedAt;
 |};
 
 public type TokenUpdate record {|
     string token?;
     time:Utc? createdAt?;
-    time:Utc? updatedAt?;
+    time:Utc updatedAt?;
 |};
 

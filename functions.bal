@@ -26,6 +26,35 @@ public function retrieveAllDocuments(string[] searchTerms) returns stream<drive:
     return driveClient->getAllFiles(filterString);
 }
 
+public function retriveUpdatedDocuments(string[] searchTerms) returns stream<drive:File>|error {
+    string folderId = "1QtYURKBwGsJHoyBh5dLXOZ1ifYXODuTq";
+    string mimeType = "application/vnd.google-apps.document";
+
+    db:Token|error latestToken = check getToken();
+    if latestToken is error {
+        return error("Failed to retrieve token");
+    }
+    time:Zone systemZone = check new time:TimeZone();
+    time:Civil utcCivil = systemZone.utcToCivil(latestToken?.updatedAt);
+    string modifiedAfter = check time:civilToString(utcCivil);
+    modifiedAfter = modifiedAfter.substring(0, 19) + "Z";
+
+    // Build the fullText filter using 'or' between each term
+    string[] searchFilters = searchTerms.map(term => "fullText contains '" + term + "'");
+    string searchFilter = string `${string:'join(" or ", ...searchFilters)}`;
+
+    // Add the filter for modified time
+    string timeFilter = "modifiedTime > '" + modifiedAfter + "'";
+
+    // Final filter string with folder, search, mime type, and modified time constraints
+    string filterString = "'" + folderId + "' in parents and " + searchFilter +
+                        " and mimeType = '" + mimeType + "' and " + timeFilter;
+
+    io:println("Filter String: ", filterString);
+
+    return driveClient->getAllFiles(filterString);
+}
+
 # Processes a single Google Drive document(Temporary for testing)
 # + driveFile - Google Drive file to process
 # + return - Processing result containing success status and error details if any
@@ -364,10 +393,9 @@ public function saveToken(string token) returns int|error {
         token: token,
         createdAt: time:utcNow(),
         updatedAt: time:utcNow()
-};
-
+    };
     int[] result = check dbClient->/tokens.post(
-        [tokenInsert]
+        [tokenInsert, tokenInsert]
     );
     if result.length() > 0 {
         return result[0];
@@ -378,13 +406,25 @@ public function saveToken(string token) returns int|error {
 
 # Description.
 # + return - return value description
-public function getToken() returns string|error {
-    int id = 1;
+public function getToken() returns db:Token|error {
+    int id = 2;
     db:Token|error token = check dbClient->/tokens/[id].get();
     if token is error {
         return error("Failed to retrieve token");
     }
-    return token.token;
+    io:println("Token: ", token?.token);
+    io:println("Token ID: ", token?.id);
+    io:println("Token Created At: ", token?.createdAt);
+    io:println("Token Updated At: ", token?.updatedAt);
+    io:println("Token Updated At (UTC): ", time:utcToString(token?.updatedAt));
+    io:println("Token Created At (UTC): ", time:utcToString(token.createdAt ?: time:utcNow()));
+
+    time:Zone systemZone = check new time:TimeZone();
+    time:Civil utcCivil = systemZone.utcToCivil(token?.updatedAt);
+    io:println("Token Updated At (Civil): ", utcCivil);
+    io:println("Token Updated At (UTC): ", time:civilToString(utcCivil));
+
+    return token;
 }
 
 # Description.
@@ -392,15 +432,27 @@ public function getToken() returns string|error {
 # + token - parameter description
 # + return - return value description
 public function updateToken(string token) returns string|error {
-    int id = 1;
-    db:TokenUpdate tokenUpdate = {
+    int latestTokenId = 2;
+    int previousTokenId = 1;
+
+    db:Token existingToken = check dbClient->/tokens/[latestTokenId].get();
+
+    db:TokenUpdate previousToken = {
+        token: existingToken.token,
+        updatedAt: time:utcNow()
+    };
+
+    io:println("Previous token: ", time:utcToString(time:utcNow()));
+
+    db:Token _ = check dbClient->/tokens/[previousTokenId].put(previousToken);
+
+    db:TokenUpdate latestToken = {
         token: token,
         updatedAt: time:utcNow()
     };
 
-    db:Token|error updatedToken = check dbClient->/tokens/[id].put(tokenUpdate);
-    if updatedToken is error {
-        return error("Failed to update token");
-    }
-    return updatedToken.token;
+    io:println("Latest token: ", latestToken?.updatedAt);
+    db:Token updatedLatestToken = check dbClient->/tokens/[latestTokenId].put(latestToken);
+
+    return updatedLatestToken.token;
 }
