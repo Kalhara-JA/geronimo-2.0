@@ -47,8 +47,8 @@ public function retriveUpdatedDocuments(string[] searchTerms) returns stream<dri
     string timeFilter = "modifiedTime > '" + modifiedAfter + "'";
 
     // Final filter string with folder, search, mime type, and modified time constraints
-    string filterString = "'" + folderId + "' in parents and " + searchFilter +
-                        " and mimeType = '" + mimeType + "' and " + timeFilter;
+    string filterString = "'" + folderId + "' in parents and (" + searchFilter +
+                        ") and mimeType = '" + mimeType + "' and " + timeFilter;
 
     io:println("Filter String: ", filterString);
 
