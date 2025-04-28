@@ -102,11 +102,12 @@ public function processDocument(drive:File driveFile) returns ProcessingResult|e
         foreach MarkdownChunk chunk in chunks {
             float[] embeddings = check getEmbedding(chunk.content);
             // Save the embedding to the database (not implemented here)
+            io:println("Chunk Index: ", chunk.chunkIndex);
             _ = check vectorStore.addVector({
                             embedding: embeddings,
-                            document: chunk.metadata.webViewLink ?: "",
-                            metadata
-                        }, driveCollectionName);
+                            document: chunk.content,
+                            metadata: chunk
+                            }, driveCollectionName);
 
         }
 
@@ -206,7 +207,15 @@ public function chunkMarkdownText(string markdownText, DocumentMetadata metadata
                 maxTokens,
                 overlapTokens
         );
+
         allChunks.push(...subChunks);
+    }
+
+    //assign chunkIndexes
+    int chunkIndex = 0;
+    foreach MarkdownChunk chunk in allChunks {
+        chunk.chunkIndex = chunkIndex;
+        chunkIndex += 1;
     }
 
     return allChunks;
@@ -264,6 +273,7 @@ function createSubChunks(DocumentMetadata metadata, string[] paragraphs, string 
     MarkdownChunk[] chunks = [];
     string[] currentWords = [];
     int currentWordCount = 0;
+    int chunkIndex = 0;
 
     foreach string paragraph in paragraphs {
         string[] paragraphWords = regex:split(paragraph, "\\s+");
@@ -277,8 +287,10 @@ function createSubChunks(DocumentMetadata metadata, string[] paragraphs, string 
                     heading: headingText,
                     headingLevel: headingLevel,
                     content: chunkText,
-                    metadata
+                    metadata,
+                    chunkIndex: chunkIndex
                 });
+                chunkIndex += 1;
             }
 
             // Start new chunk with overlap
@@ -303,7 +315,8 @@ function createSubChunks(DocumentMetadata metadata, string[] paragraphs, string 
             heading: headingText,
             headingLevel: headingLevel,
             content: finalChunkText,
-            metadata
+            metadata,
+            chunkIndex: chunkIndex
         });
     }
 
@@ -370,17 +383,25 @@ public function deleteExistingVectors(DocumentMetadata metadata, string collecti
 #
 # + embedding - parameter description
 # + documentLink - parameter description
-# + metadata - parameter description
+# + chunk - parameter description
 # + collectionName - parameter description
 # + return - return value description
-public function addVectorEntry(float[] embedding, string documentLink, DocumentMetadata metadata,
+public function addVectorEntry(float[] embedding, string documentLink, MarkdownChunk chunk,
         string collectionName)
     returns VectorDataWithId|error
-{
+    {
+
+    map<json> chunkMetadata = {
+        heading: chunk.heading,
+        headingLevel: chunk.headingLevel,
+        metadata: chunk.metadata,
+        chunkIndex: chunk.chunkIndex
+    };
+
     return vectorStore.addVector({
-        embedding: embedding,
-        document: documentLink,
-        metadata: metadata
+            embedding: embedding,
+            document: chunk.content,
+            metadata: chunkMetadata
     }, collectionName);
 }
 

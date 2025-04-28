@@ -74,6 +74,8 @@ public type MarkdownChunk record {|
     string content;
     // Additional metadata
     DocumentMetadata metadata;
+    // Represents the chunk ID
+    int chunkIndex;
 |};
 
 # Represents an embedding response from the Azure OpenAI API

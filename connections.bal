@@ -6,7 +6,6 @@ import ballerina/http;
 import ballerinax/googleapis.drive as drive;
 import ballerinax/postgresql;
 import ballerinax/postgresql.driver as _;
-import ballerinax/postgresql.driver as _;
 
 // import ballerinax/postgresql;
 

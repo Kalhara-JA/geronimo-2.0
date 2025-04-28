@@ -126,7 +126,7 @@ class Job {
                     VectorDataWithId|error vectorEntry = addVectorEntry(
                                     embeddings,
                             chunk.metadata.webViewLink ?: "",
-                            fileMetadata,
+                            chunk,
                             driveCollectionName
                             );
 
@@ -230,9 +230,9 @@ service /vectorize on httpDefaultListener {
                 _ = check addVectorEntry(
                         embeddings,
                         chunk.metadata.webViewLink ?: "",
-                        metadata,
+                        chunk,
                         driveCollectionName
-                );
+);
 
             }
             log:printInfo(`Chunks processed from file: ${metadata.fileId}`);
@@ -337,7 +337,7 @@ service /vectorize on httpDefaultListener {
                     _ = check addVectorEntry(
                                     embeddings,
                             chunk.metadata.webViewLink ?: "",
-                            fileMetadata,
+                            chunk,
                             driveCollectionName
                             );
 
