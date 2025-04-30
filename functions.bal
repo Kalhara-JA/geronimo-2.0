@@ -427,6 +427,7 @@ function getEmbedding(string chunk) returns float[]|error {
         {"input": chunk},
         {"api-key": azureOpenaiApiKey}
     );
+    
     return response.data[0].embedding;
 }
 
@@ -452,7 +453,10 @@ public function deleteExistingVectors(DocumentMetadata metadata, string collecti
     return vectorStore.deleteVectorsByMetadata(metadata, collectionName);
 }
 
-/// Recursively sanitizes any json object to make it safe for PostgreSQL JSON column.
+# Description.
+#
+# + input - parameter description
+# + return - return value description
 public function sanitizeJson(json input) returns json|error {
     if input is string {
         // Remove invalid backslashes (e.g., \-, \a) and control characters
@@ -488,10 +492,11 @@ public function sanitizeJson(json input) returns json|error {
     return input;
 }
 
-/// Sanitizes any map<json> metadata to ensure it's safely JSON-parsable and PostgreSQL-compatible.
-///
-/// + rawMetadata - The raw metadata map (possibly with nested records or strings)
-/// + return - A clean `map<json>` ready for insertion
+
+# Description.
+#
+# + rawMetadata - parameter description
+# + return - return value description
 public function sanitizeMetadata(map<json> rawMetadata) returns map<json>|error {
     json cleaned = check sanitizeJson(rawMetadata);
     map<json> parsedMap = check cleaned.cloneWithType();
@@ -559,7 +564,6 @@ public function getToken() returns db:Token|error {
 
 # Description.
 #
-# + token - parameter description
 # + return - return value description
 public function updateToken() returns string|error {
 

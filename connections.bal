@@ -18,9 +18,23 @@ final drive:Client driveClient = check new ({
         refreshToken: refreshToken,
         clientId: clientId,
         clientSecret: clientSecret
+    },
+    retryConfig: {
+        interval: 3,
+        count: 5,
+        backOffFactor: 2.0,
+        maxWaitInterval: 20
     }
 });
-final http:Client embeddings = check new (azureOpenaiUrl);
+final http:Client embeddings = check new (
+    azureOpenaiUrl,
+    retryConfig = {
+            interval: 3,
+            count: 5,
+            backOffFactor: 2.0,
+            maxWaitInterval: 20
+        }
+);
 
 final pgvector:VectorStore vectorStore = check new ({
         host: driveDbHostname,
