@@ -3,9 +3,26 @@
 import geronimo_2_0.db;
 
 import ballerina/io;
+import ballerina/lang.value;
+import ballerina/log;
 import ballerina/regex;
 import ballerina/time;
 import ballerinax/googleapis.drive as drive;
+
+// function withRetry(function () returns error|json operation, int maxAttempts) returns error|json {
+//     int attempt = 0;
+//     while attempt < maxAttempts {
+//         error|json result = operation();
+//         if (result is json) {
+//             return result;
+//         } else {
+//             log:printError("Operation failed, retrying...", result);
+//             attempt += 1;
+//             time:sleep(time:Seconds(2));
+//         }
+//     }
+//     return error("Max attempts reached");
+// }
 
 # Retrieves all documents from Google Drive based on specific criteria
 #
@@ -26,7 +43,7 @@ public function retrieveAllDocuments(string[] searchTerms) returns stream<drive:
     return driveClient->getAllFiles(filterString);
 }
 
-public function retriveUpdatedDocuments(string[] searchTerms) returns stream<drive:File>|error {
+public function retrieveUpdatedDocuments(string[] searchTerms) returns stream<drive:File>|error {
     string folderId = "1QtYURKBwGsJHoyBh5dLXOZ1ifYXODuTq";
     string mimeType = "application/vnd.google-apps.document";
 
@@ -55,71 +72,127 @@ public function retriveUpdatedDocuments(string[] searchTerms) returns stream<dri
     return driveClient->getAllFiles(filterString);
 }
 
-# Processes a single Google Drive document(Temporary for testing)
-# + driveFile - Google Drive file to process
-# + return - Processing result containing success status and error details if any
-public function processDocument(drive:File driveFile) returns ProcessingResult|error {
-    io:println("Processing file: ", driveFile);
-    string fileId = driveFile.id ?: "";
-    string fileName = driveFile.name ?: "";
+# Description.
+#
+# + documentStream - parameter description
+# + return - return value description
+public function processDocuments(stream<drive:File> documentStream) returns ProcessingResult[]|error {
 
-    // Initialize result record
-    ProcessingResult result = {
-        fileId: fileId,
-        fileName: fileName,
-        fileLink: driveFile.webViewLink ?: "",
-        success: false,
-        errorMessage: ()
-    };
+    log:printInfo("Documents retrieved from Google Drive");
 
-    do {
-        // Extract metadata
-        DocumentMetadata metadata = check extractMetadata(driveFile.id ?: "");
-        io:println("File Metadata: ", metadata);
+    ProcessingResult[] results = [];
+    drive:File[] changesList = from drive:File ch in documentStream
+        select ch;
 
-        // Extract and save content
-        string extractedContent = check extractContent(fileId, fileName);
-
-        // Chunk the extracted content
-        // Define chunking parameters
-        MarkdownChunk[] chunks = chunkMarkdownText(extractedContent, metadata, maxTokens = 400, overlapTokens = 50);
-
-        // Save chunks to file(temporary)
-        string chunkFilePath = string `markdown_files/${fileName}_chunks.md`;
-        string chunkContent = "";
-        foreach MarkdownChunk chunk in chunks {
-            chunkContent += string `## ${chunk.heading} (Level: ${chunk.headingLevel ?: 0})\n${chunk.content}\n\n${chunk.metadata.toString()}\n\n `;
-        }
-        do {
-            check io:fileWriteString(chunkFilePath, chunkContent);
-        } on fail var e {
-            result.errorMessage = e.message();
-            return result;
-        }
-        io:println("Saved chunks to: ", chunkFilePath);
-
-        // Get embeddings for each chunk
-        foreach MarkdownChunk chunk in chunks {
-            float[] embeddings = check getEmbedding(chunk.content);
-            // Save the embedding to the database (not implemented here)
-            io:println("Chunk Index: ", chunk.chunkIndex);
-            _ = check vectorStore.addVector({
-                            embedding: embeddings,
-                            document: chunk.content,
-                            metadata: chunk
-                            }, driveCollectionName);
-
-        }
-
-        result.success = true;
+    if changesList.length() == 0 {
+        log:printInfo("No changes found in Google Drive");
+        return results;
     }
 
-on fail var e {
-        result.errorMessage = e.message();
+    foreach drive:File ch in changesList {
+        io:println("Changed file id: ", ch.id);
+        DocumentMetadata metadata = {
+                fileId: ch.id ?: ""
+            };
+        if (ch.trashed == true) {
+            // Handle file removal
+            int|error deletedCount = deleteExistingVectors(metadata, driveCollectionName);
+            if (deletedCount is error) {
+                log:printError("Error deleting vectors for removed file", deletedCount);
+                return error("Failed to delete vectors for removed file");
+            }
+            log:printInfo(`Deleted vectors for removed file: ${ch.id} count: ${deletedCount}`);
+        } else {
+            // Extract metadata
+            log:printInfo(`Extracting metadata from file: ${ch.id}`);
+            DocumentMetadata|error fileMetadata = extractMetadata(ch.id ?: "");
+            if (fileMetadata is error) {
+                log:printError("Error extracting metadata", fileMetadata);
+                return error("Failed to extract metadata");
+            }
+            log:printInfo(`Metadata extracted from file: ${metadata.fileId}`);
+
+            if fileMetadata.mimeType != "application/vnd.google-apps.document" {
+                log:printInfo(`Skipping file: ${fileMetadata.fileId} as it is not a Google Doc`);
+                continue;
+            }
+
+            // Initialize result record
+            ProcessingResult result = {
+                    fileId: fileMetadata.fileId,
+                    fileName: fileMetadata.fileName ?: "",
+                    fileLink: fileMetadata.webViewLink ?: "",
+                    success: false,
+                    errorMessage: ()
+                };
+
+            // Extract file content
+            log:printInfo(`Extracting content from file: ${fileMetadata.fileId}`);
+            string|error extractedContent = extractContent(fileMetadata.fileId, fileMetadata.fileName ?: "");
+            if (extractedContent is error) {
+                log:printError("Error extracting content", extractedContent);
+                return error("Failed to extract content");
+            }
+            log:printInfo(`Content extracted from file: ${fileMetadata.fileId}`);
+
+            // Chunk the extracted content
+            log:printInfo(`Chunking content from file: ${fileMetadata.fileId}`);
+            MarkdownChunk[] chunks = chunkMarkdownText(extractedContent, fileMetadata, maxTokens = 400, overlapTokens = 50);
+            log:printInfo(`Content chunked from file: ${fileMetadata.fileId}`);
+
+            //check vectorstore if the file already exists and delete if it does
+            log:printInfo(`Checking for existing vectors for file: ${fileMetadata.fileId}`);
+            VectorDataWithId[]|error existing = fetchExistingVectors(fileMetadata, driveCollectionName);
+            if (existing is error) {
+                log:printError("Error fetching existing vectors", existing);
+                return error("Failed to fetch existing vectors");
+            }
+            if existing.length() > 0 {
+                int|error deletedCount = deleteExistingVectors(fileMetadata, driveCollectionName);
+                if (deletedCount is error) {
+                    log:printError("Error deleting existing vectors", deletedCount);
+                    return error("Failed to delete existing vectors");
+                }
+                log:printInfo(`Deleted ${deletedCount} existing vectors for file: ${fileMetadata.fileId}`);
+            }
+
+            // Iterate over each chunk and get embeddings
+            log:printInfo(`Processing chunks from file: ${fileMetadata.fileId}`);
+            foreach MarkdownChunk chunk in chunks {
+                // Get embeddings for each chunk
+                float[]|error embeddings = getEmbedding(chunk.content);
+
+                if (embeddings is error) {
+                    log:printError("Error getting embeddings", embeddings);
+                    return error("Failed to get embeddings");
+                }
+
+                // Store in vector store
+                VectorDataWithId|error vectors = addVectorEntry(
+                                    embeddings,
+                        chunk.metadata.webViewLink ?: "",
+                        chunk,
+                        driveCollectionName
+                            );
+
+                if (vectors is error) {
+                    log:printError("Error adding vector entry", vectors);
+                    return error("Failed to add vector entry");
+                }
+
+            }
+            log:printInfo(`Chunks processed from file: ${fileMetadata.fileId}`);
+            // Update result record
+            result.success = true;
+            results.push(result);
+        }
     }
-
-    return result;
-
+    // Return the results
+    if results.length() > 0 {
+        return results;
+    } else {
+        return error("No results found");
+    }
 }
 
 # extracts metadata from a Google Drive file
@@ -379,6 +452,52 @@ public function deleteExistingVectors(DocumentMetadata metadata, string collecti
     return vectorStore.deleteVectorsByMetadata(metadata, collectionName);
 }
 
+/// Recursively sanitizes any json object to make it safe for PostgreSQL JSON column.
+public function sanitizeJson(json input) returns json|error {
+    if input is string {
+        // Remove invalid backslashes (e.g., \-, \a) and control characters
+        string:RegExp regex1 = re `\\(.)`;
+        string cleaned = regex1.replaceAll(input, "");
+
+        // Try to parse stringified JSON inside a string field (e.g. metadata = "{\"fileId\":\"abc\"}")
+        json|error parsed = value:fromJsonString(cleaned);
+        if parsed is map<json> || parsed is json[] {
+            return sanitizeJson(parsed); // Recursively clean parsed structure
+        }
+        return cleaned;
+    } else if input is map<json> {
+        map<json> result = {};
+        foreach var [k, v] in input.entries() {
+            result[k] = check sanitizeJson(v);
+        }
+        return result;
+    } else if input is json[] {
+        json[] result = [];
+        foreach json item in input {
+            result.push(check sanitizeJson(item));
+        }
+        return result;
+    } else if input is float {
+        // Remove NaN or Infinity — fallback to null or 0
+        if input == 1.0 / 0.0 || input == -1.0 / 0.0 || input != input {
+            return null;
+        }
+        return input;
+    }
+
+    return input;
+}
+
+/// Sanitizes any map<json> metadata to ensure it's safely JSON-parsable and PostgreSQL-compatible.
+///
+/// + rawMetadata - The raw metadata map (possibly with nested records or strings)
+/// + return - A clean `map<json>` ready for insertion
+public function sanitizeMetadata(map<json> rawMetadata) returns map<json>|error {
+    json cleaned = check sanitizeJson(rawMetadata);
+    map<json> parsedMap = check cleaned.cloneWithType();
+    return parsedMap;
+}
+
 # Add a vector entry to the vector store
 #
 # + embedding - parameter description
@@ -390,26 +509,28 @@ public function addVectorEntry(float[] embedding, string documentLink, MarkdownC
         string collectionName)
     returns VectorDataWithId|error
     {
-
     map<json> chunkMetadata = {
-        heading: chunk.heading,
+        heading: chunk.heading.toString(),
         headingLevel: chunk.headingLevel,
         metadata: chunk.metadata,
         chunkIndex: chunk.chunkIndex
     };
 
+    io:println("Chunk Metadata: ", chunkMetadata);
+
     return vectorStore.addVector({
             embedding: embedding,
             document: chunk.content,
-            metadata: chunkMetadata
+            metadata: check sanitizeMetadata(chunkMetadata)
     }, collectionName);
 }
 
 # Description.
-#
-# + token - parameter description
 # + return - return value description
-public function saveToken(string token) returns int|error {
+public function saveInitialToken() returns int|error {
+
+    string token = check driveClient->getStartPageToken();
+
     db:TokenInsert tokenInsert = {
         token: token,
         createdAt: time:utcNow(),
@@ -433,18 +554,6 @@ public function getToken() returns db:Token|error {
     if token is error {
         return error("Failed to retrieve token");
     }
-    io:println("Token: ", token?.token);
-    io:println("Token ID: ", token?.id);
-    io:println("Token Created At: ", token?.createdAt);
-    io:println("Token Updated At: ", token?.updatedAt);
-    io:println("Token Updated At (UTC): ", time:utcToString(token?.updatedAt));
-    io:println("Token Created At (UTC): ", time:utcToString(token.createdAt ?: time:utcNow()));
-
-    time:Zone systemZone = check new time:TimeZone();
-    time:Civil utcCivil = systemZone.utcToCivil(token?.updatedAt);
-    io:println("Token Updated At (Civil): ", utcCivil);
-    io:println("Token Updated At (UTC): ", time:civilToString(utcCivil));
-
     return token;
 }
 
@@ -452,7 +561,10 @@ public function getToken() returns db:Token|error {
 #
 # + token - parameter description
 # + return - return value description
-public function updateToken(string token) returns string|error {
+public function updateToken() returns string|error {
+
+    string token = check driveClient->getStartPageToken();
+
     int latestTokenId = 2;
     int previousTokenId = 1;
 
