@@ -70,7 +70,7 @@ service /vectorize on httpDefaultListener {
             log:printError("Error processing documents", results);
             return;
         }
-
+        
         // Update the last token
         string|error updatedToken = updateToken();
         if (updatedToken is error) {

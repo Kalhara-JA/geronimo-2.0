@@ -6,7 +6,6 @@ import ballerina/io;
 import ballerina/lang.value;
 import ballerina/log;
 import ballerina/regex;
-import ballerina/sql;
 import ballerina/time;
 import ballerinax/googleapis.drive as drive;
 
@@ -435,13 +434,7 @@ function getEmbeddings(string[] chunks) returns float[][]|error {
 public function fetchExistingVectors(DocumentMetadata metadata, string collectionName)
     returns VectorDataWithId[]|error
 {
-
-    map<sql:Value> metadataMap = {
-        fileId: metadata.fileId,
-        fileName: metadata.fileName
-    };
-
-    return vectorStore.fetchVectorByMetadata(metadataMap, collectionName);
+    return vectorStore.fetchVectorByMetadata({fileId: metadata.fileId}, collectionName);
 }
 
 # Delete existing vectors based on metadata
@@ -452,7 +445,7 @@ public function fetchExistingVectors(DocumentMetadata metadata, string collectio
 public function deleteExistingVectors(DocumentMetadata metadata, string collectionName)
     returns int|error
 {
-    return vectorStore.deleteVectorsByMetadata(metadata, collectionName);
+    return vectorStore.deleteVectorsByMetadata({fileId: metadata.fileId}, collectionName);
 }
 
 # Description.
@@ -518,11 +511,12 @@ public function addVectorEntry(float[] embedding, string documentLink, MarkdownC
     map<json> chunkMetadata = {
         heading: chunk.heading.toString(),
         headingLevel: chunk.headingLevel,
-        metadata: chunk.metadata,
+        fileId: chunk.metadata.fileId,
+        fileName: chunk.metadata.fileName,
+        webViewLink: documentLink,
+        createdTime: chunk.metadata.createdTime,
         chunkIndex: chunk.chunkIndex
     };
-
-    io:println("Chunk Metadata: ", chunkMetadata);
 
     return vectorStore.addVector({
             embedding: embedding,
