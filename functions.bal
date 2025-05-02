@@ -6,23 +6,9 @@ import ballerina/io;
 import ballerina/lang.value;
 import ballerina/log;
 import ballerina/regex;
+import ballerina/sql;
 import ballerina/time;
 import ballerinax/googleapis.drive as drive;
-
-// function withRetry(function () returns error|json operation, int maxAttempts) returns error|json {
-//     int attempt = 0;
-//     while attempt < maxAttempts {
-//         error|json result = operation();
-//         if (result is json) {
-//             return result;
-//         } else {
-//             log:printError("Operation failed, retrying...", result);
-//             attempt += 1;
-//             time:sleep(time:Seconds(2));
-//         }
-//     }
-//     return error("Max attempts reached");
-// }
 
 # Retrieves all documents from Google Drive based on specific criteria
 #
@@ -158,18 +144,23 @@ public function processDocuments(stream<drive:File> documentStream) returns Proc
 
             // Iterate over each chunk and get embeddings
             log:printInfo(`Processing chunks from file: ${fileMetadata.fileId}`);
+            string[] contents = [];
             foreach MarkdownChunk chunk in chunks {
-                // Get embeddings for each chunk
-                float[]|error embeddings = getEmbedding(chunk.content);
+                contents.push(chunk.content);
+            }
 
-                if (embeddings is error) {
-                    log:printError("Error getting embeddings", embeddings);
-                    return error("Failed to get embeddings");
-                }
+            // Get embeddings for all chunks
+            float[][]|error allEmbeddings = getEmbeddings(contents);
 
-                // Store in vector store
+            if (allEmbeddings is error) {
+                log:printError("Error getting embeddings", allEmbeddings);
+                return error("Failed to get embeddings");
+            }
+            log:printInfo(`Embeddings retrieved for file: ${fileMetadata.fileId}`);
+
+            foreach MarkdownChunk chunk in chunks {
                 VectorDataWithId|error vectors = addVectorEntry(
-                                    embeddings,
+                                    allEmbeddings[chunk.chunkIndex],
                         chunk.metadata.webViewLink ?: "",
                         chunk,
                         driveCollectionName
@@ -419,16 +410,21 @@ function extractHeading(string line) returns [boolean, int, string] {
 }
 
 # Retrieves embeddings for a given text chunk
-# + chunk - Text chunk to get embeddings for
+# + chunks - Text chunks to get embeddings for
 # + return - Array of float embeddings or error if retrieval fails
-function getEmbedding(string chunk) returns float[]|error {
+function getEmbeddings(string[] chunks) returns float[][]|error {
     EmbeddingResponse response = check embeddings->post(
         string `/deployments/${azureOpenaiEmbeddingName}/embeddings?api-version=${azureOpenaiApiVersion}`,
-        {"input": chunk},
+        {"input": chunks},
         {"api-key": azureOpenaiApiKey}
     );
-    
-    return response.data[0].embedding;
+
+    float[][] allEmbeddings = [];
+    foreach EmebeddingData d in response.data {
+        allEmbeddings.push(d.embedding);
+    }
+
+    return allEmbeddings;
 }
 
 # Fetch existing vectors based on metadata
@@ -439,7 +435,13 @@ function getEmbedding(string chunk) returns float[]|error {
 public function fetchExistingVectors(DocumentMetadata metadata, string collectionName)
     returns VectorDataWithId[]|error
 {
-    return vectorStore.fetchVectorByMetadata(metadata, collectionName);
+
+    map<sql:Value> metadataMap = {
+        fileId: metadata.fileId,
+        fileName: metadata.fileName
+    };
+
+    return vectorStore.fetchVectorByMetadata(metadataMap, collectionName);
 }
 
 # Delete existing vectors based on metadata
@@ -491,7 +493,6 @@ public function sanitizeJson(json input) returns json|error {
 
     return input;
 }
-
 
 # Description.
 #
