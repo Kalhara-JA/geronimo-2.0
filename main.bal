@@ -1,3 +1,5 @@
+// main.bal
+
 import ballerina/http;
 import ballerina/log;
 import ballerina/task;
@@ -9,75 +11,76 @@ class Job {
     *task:Job;
 
     public function execute() {
+        log:printInfo("Job: Starting scheduled document processing");
         stream<drive:File>|error documentStream = retrieveUpdatedDocuments(["attendees", "Invited"]);
         if (documentStream is error) {
-            log:printError("Error retrieving documents from Google Drive", documentStream);
+            log:printError("Job: Error retrieving documents from Google Drive", documentStream);
             return;
         }
+        log:printInfo("Job: Retrieved updated documents from Google Drive");
         ProcessingResult[]|error results = processDocuments(documentStream);
         if (results is error) {
-            log:printError("Error processing documents", results);
+            log:printError("Job: Error processing documents", results);
             return;
         }
-        log:printInfo("Documents processed successfully");
+        log:printInfo(`Job: Documents processed successfully. Results count: ${results.length()}`);
     }
 }
 
 // Schedule the job to run every 7 days
 public function main() returns error? {
-    // log:printInfo("Starting Google Drive Updated Document Processing Service...");
+    // log:printInfo("Main: Starting Google Drive Updated Document Processing Service...");
     // task:JobId jobId = check task:scheduleJobRecurByFrequency(new Job(), jobInterval);
-    // log:printInfo(`Scheduled job with ID: ${jobId}`);
+    // log:printInfo(`Main: Scheduled job with ID: ${jobId}`);
 }
 
 service /vectorize on httpDefaultListener {
 
     resource function post init() returns error|json {
-        // Retrieve all documents from Google Drive
-        log:printInfo("Retrieving documents from Google Drive");
+        log:printInfo("POST /vectorize/init: Retrieving all documents from Google Drive");
         stream<drive:File> documentStream = check retrieveAllDocuments(["attendees", "Invited"]);
-        log:printInfo("Documents retrieved from Google Drive");
+        log:printInfo("POST /vectorize/init: Documents retrieved from Google Drive");
 
         ProcessingResult[]|error results = processDocuments(documentStream);
         if (results is error) {
-            log:printError("Error processing documents", results);
+            log:printError("POST /vectorize/init: Error processing documents", results);
             return error("Failed to process documents");
         }
-        log:printInfo("Documents processed successfully");
+        log:printInfo(`POST /vectorize/init: Documents processed successfully. Results count: ${results.length()}`);
 
         int saveTokenResult = check saveInitialToken();
-        log:printInfo(`Token saved successfully: ${saveTokenResult}`);
+        log:printInfo(`POST /vectorize/init: Token saved successfully: ${saveTokenResult}`);
 
-        // Create a response object
         json response = {
             message: "Documents processed successfully",
             results: results
         };
 
-        // Return the response
         return response;
     }
 
     resource function post changes() returns error|json {
+        log:printInfo("POST /vectorize/changes: Retrieving updated documents from Google Drive");
         stream<drive:File>|error documentStream = retrieveUpdatedDocuments(["attendees", "Invited"]);
         if (documentStream is error) {
-            log:printError("Error retrieving documents from Google Drive", documentStream);
+            log:printError("POST /vectorize/changes: Error retrieving documents from Google Drive", documentStream);
             return error("Failed to retrieve documents");
         }
-        
+        log:printInfo("POST /vectorize/changes: Documents retrieved from Google Drive");
+
         ProcessingResult[]|error results = processDocuments(documentStream);
         if (results is error) {
-            log:printError("Error processing documents", results);
+            log:printError("POST /vectorize/changes: Error processing documents", results);
             return;
         }
-        
-        // Update the last token
+        log:printInfo(`POST /vectorize/changes: Documents processed successfully. Results count: ${results.length()}`);
+
         string|error updatedToken = updateToken();
         if (updatedToken is error) {
-            log:printError("Error updating token", updatedToken);
+            log:printError("POST /vectorize/changes: Error updating token", updatedToken);
             return error("Failed to update token");
         }
-        log:printInfo(`Token updated successfully: ${updatedToken}`);
+        log:printInfo(`POST /vectorize/changes: Token updated successfully: ${updatedToken}`);
 
         json response = {
             message: "Documents processed successfully",
