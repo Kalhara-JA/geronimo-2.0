@@ -39,6 +39,24 @@ public type Token record {|
     @sql:Name {value: "created_at"}
     time:Utc? createdAt;
     @sql:Name {value: "updated_at"}
-    time:Utc? updatedAt;
+    time:Utc updatedAt;
+|};
+
+@sql:Name {value: "file_status"}
+public type FileProcessingStatus record {|
+
+    @sql:Name {value: "file_id"}
+    readonly string fileId;
+
+    string status; // processing | success | error
+
+    @sql:Name {value: "error_message"}
+    string? errorMessage;
+
+    @sql:Name {value: "created_at"}
+    time:Utc? createdAt;
+
+    @sql:Name {value: "updated_at"}
+    time:Utc updatedAt;
 |};
 

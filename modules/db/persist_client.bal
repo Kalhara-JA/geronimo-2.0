@@ -11,6 +11,7 @@ import ballerinax/postgresql;
 import ballerinax/postgresql.driver as _;
 
 const TOKEN = "tokens";
+const FILE_PROCESSING_STATUS = "fileprocessingstatuses";
 
 public isolated client class Client {
     *persist:AbstractPersistClient;
@@ -30,6 +31,18 @@ public isolated client class Client {
                 updatedAt: {columnName: "updated_at"}
             },
             keyFields: ["id"]
+        },
+        [FILE_PROCESSING_STATUS]: {
+            entityName: "FileProcessingStatus",
+            tableName: "file_status",
+            fieldMetadata: {
+                fileId: {columnName: "file_id"},
+                status: {columnName: "status"},
+                errorMessage: {columnName: "error_message"},
+                createdAt: {columnName: "created_at"},
+                updatedAt: {columnName: "updated_at"}
+            },
+            keyFields: ["fileId"]
         }
     };
 
@@ -58,7 +71,10 @@ public isolated client class Client {
                 }
             }
         }
-        self.persistClients = {[TOKEN]: check new (dbClient, self.metadata.get(TOKEN).cloneReadOnly(), psql:POSTGRESQL_SPECIFICS)};
+        self.persistClients = {
+            [TOKEN]: check new (dbClient, self.metadata.get(TOKEN).cloneReadOnly(), psql:POSTGRESQL_SPECIFICS),
+            [FILE_PROCESSING_STATUS]: check new (dbClient, self.metadata.get(FILE_PROCESSING_STATUS).cloneReadOnly(), psql:POSTGRESQL_SPECIFICS)
+        };
     }
 
     isolated resource function get tokens(TokenTargetType targetType = <>, sql:ParameterizedQuery whereClause = ``, sql:ParameterizedQuery orderByClause = ``, sql:ParameterizedQuery limitClause = ``, sql:ParameterizedQuery groupByClause = ``) returns stream<targetType, persist:Error?> = @java:Method {
@@ -98,6 +114,45 @@ public isolated client class Client {
             sqlClient = self.persistClients.get(TOKEN);
         }
         _ = check sqlClient.runDeleteQuery(id);
+        return result;
+    }
+
+    isolated resource function get fileprocessingstatuses(FileProcessingStatusTargetType targetType = <>, sql:ParameterizedQuery whereClause = ``, sql:ParameterizedQuery orderByClause = ``, sql:ParameterizedQuery limitClause = ``, sql:ParameterizedQuery groupByClause = ``) returns stream<targetType, persist:Error?> = @java:Method {
+        'class: "io.ballerina.stdlib.persist.sql.datastore.PostgreSQLProcessor",
+        name: "query"
+    } external;
+
+    isolated resource function get fileprocessingstatuses/[string fileId](FileProcessingStatusTargetType targetType = <>) returns targetType|persist:Error = @java:Method {
+        'class: "io.ballerina.stdlib.persist.sql.datastore.PostgreSQLProcessor",
+        name: "queryOne"
+    } external;
+
+    isolated resource function post fileprocessingstatuses(FileProcessingStatusInsert[] data) returns string[]|persist:Error {
+        psql:SQLClient sqlClient;
+        lock {
+            sqlClient = self.persistClients.get(FILE_PROCESSING_STATUS);
+        }
+        _ = check sqlClient.runBatchInsertQuery(data);
+        return from FileProcessingStatusInsert inserted in data
+            select inserted.fileId;
+    }
+
+    isolated resource function put fileprocessingstatuses/[string fileId](FileProcessingStatusUpdate value) returns FileProcessingStatus|persist:Error {
+        psql:SQLClient sqlClient;
+        lock {
+            sqlClient = self.persistClients.get(FILE_PROCESSING_STATUS);
+        }
+        _ = check sqlClient.runUpdateQuery(fileId, value);
+        return self->/fileprocessingstatuses/[fileId].get();
+    }
+
+    isolated resource function delete fileprocessingstatuses/[string fileId]() returns FileProcessingStatus|persist:Error {
+        FileProcessingStatus result = check self->/fileprocessingstatuses/[fileId].get();
+        psql:SQLClient sqlClient;
+        lock {
+            sqlClient = self.persistClients.get(FILE_PROCESSING_STATUS);
+        }
+        _ = check sqlClient.runDeleteQuery(fileId);
         return result;
     }
 

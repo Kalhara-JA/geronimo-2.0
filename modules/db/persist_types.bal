@@ -48,7 +48,7 @@ public type TokenOptionalized record {|
     int id?;
     string token?;
     time:Utc? createdAt?;
-    time:Utc? updatedAt?;
+    time:Utc updatedAt?;
 |};
 
 public type TokenTargetType typedesc<TokenOptionalized>;
@@ -61,6 +61,33 @@ public type TokenInsert record {|
 
 public type TokenUpdate record {|
     string token?;
+    time:Utc? createdAt?;
+    time:Utc updatedAt?;
+|};
+
+public type FileProcessingStatus record {|
+    readonly string fileId;
+    string status;
+    string? errorMessage;
+    time:Utc? createdAt;
+    time:Utc updatedAt;
+|};
+
+public type FileProcessingStatusOptionalized record {|
+    string fileId?;
+    string status?;
+    string? errorMessage?;
+    time:Utc? createdAt?;
+    time:Utc updatedAt?;
+|};
+
+public type FileProcessingStatusTargetType typedesc<FileProcessingStatusOptionalized>;
+
+public type FileProcessingStatusInsert FileProcessingStatus;
+
+public type FileProcessingStatusUpdate record {|
+    string status?;
+    string? errorMessage?;
     time:Utc? createdAt?;
     time:Utc updatedAt?;
 |};

@@ -2,9 +2,18 @@ import geronimo_2_0.db;
 
 import ballerina/lang.value;
 import ballerina/log;
+import ballerina/persist;
 import ballerina/regex;
 import ballerina/time;
 import ballerinax/googleapis.drive as drive;
+
+const int LATEST_TOKEN_ID = 2;
+const int MAX_TOKENS = 400;
+const int OVERLAP_TOKENS = 50;
+
+public const string STATUS_PROCESSING = "processing";
+public const string STATUS_SUCCESS = "success";
+public const string STATUS_ERROR = "error";
 
 # Processes a stream of Google Drive files, extracting content, chunking, embedding, and storing vectors.
 #
@@ -24,97 +33,19 @@ public function processDocuments(stream<drive:File> documentStream) returns Proc
     }
 
     foreach drive:File ch in changesList {
-        DocumentMetadata metadata = {fileId: ch.id ?: ""};
-        log:printInfo(`processDocuments: Handling file ${metadata.fileId}`);
-
-        if ch.trashed == true {
-            log:printWarn(`processDocuments: File ${metadata.fileId} is trashed. Deleting vectors.`);
-            int|error deletedCount = deleteExistingVectors(metadata, driveCollectionName);
-            if (deletedCount is error) {
-                log:printError(`processDocuments: Error deleting vectors for removed file ${metadata.fileId}`);
-                return error("Failed to delete vectors for removed file");
-            }
-            log:printInfo(`processDocuments: Deleted ${deletedCount} vectors for removed file ${metadata.fileId}`);
-        } else {
-            log:printInfo(`processDocuments: Extracting metadata for file ${metadata.fileId}`);
-            DocumentMetadata|error fileMetadata = extractMetadata(metadata.fileId);
-            if (fileMetadata is error) {
-                log:printError(`processDocuments: Error extracting metadata for file ${metadata.fileId}`);
-                return error("Failed to extract metadata");
-            }
-            log:printDebug(`processDocuments: Metadata: ${fileMetadata.toJsonString()}`);
-
-            if fileMetadata.mimeType != "application/vnd.google-apps.document" {
-                log:printInfo(`processDocuments: Skipping non-Google-Doc file ${fileMetadata.fileId}`);
-                continue;
-            }
-
-            ProcessingResult result = {
-                fileId: fileMetadata.fileId,
-                fileName: fileMetadata.fileName ?: "",
-                fileLink: fileMetadata.webViewLink ?: "",
+        ProcessingResult|error res = processSingleDocument(ch);
+        if res is error {
+            check markProcessingError(ch.id ?: "", res.message());
+            results.push({
+                fileId: ch.id ?: "",
+                fileName: ch.name ?: "",
+                fileLink: ch.webViewLink ?: "",
                 success: false,
-                errorMessage: ()
-            };
-
-            log:printInfo(`processDocuments: Extracting content for file ${fileMetadata.fileId}`);
-            string|error extractedContent = extractContent(fileMetadata.fileId, fileMetadata.fileName ?: "");
-            if (extractedContent is error) {
-                log:printError(`processDocuments: Error extracting content for file ${fileMetadata.fileId}`);
-                return error("Failed to extract content");
-            }
-            log:printDebug(`processDocuments: Extracted content length ${extractedContent.length()} for file ${fileMetadata.fileId}`);
-
-            log:printInfo(`processDocuments: Chunking content for file ${fileMetadata.fileId}`);
-            MarkdownChunk[] chunks = chunkMarkdownText(extractedContent, fileMetadata, 400, 50);
-            log:printInfo(`processDocuments: Created ${chunks.length()} chunks for file ${fileMetadata.fileId}`);
-
-            log:printInfo(`processDocuments: Fetching existing vectors for file ${fileMetadata.fileId}`);
-            VectorDataWithId[]|error existing = fetchExistingVectors(fileMetadata, driveCollectionName);
-            if (existing is error) {
-                log:printError(`processDocuments: Error fetching existing vectors for file ${fileMetadata.fileId}`);
-                return error("Failed to fetch existing vectors");
-            }
-            if existing.length() > 0 {
-                log:printWarn(`processDocuments: Found ${existing.length()} existing vectors. Deleting.`);
-                int|error deletedCount2 = deleteExistingVectors(fileMetadata, driveCollectionName);
-                if (deletedCount2 is error) {
-                    log:printError(`processDocuments: Error deleting existing vectors for file ${fileMetadata.fileId}`);
-                    return error("Failed to delete existing vectors");
-                }
-                log:printInfo(`processDocuments: Deleted ${deletedCount2} existing vectors for file ${fileMetadata.fileId}`);
-            }
-
-            string[] contents = [];
-            foreach MarkdownChunk chunk in chunks {
-                contents.push(chunk.content);
-            }
-
-            log:printInfo(`processDocuments: Retrieving embeddings for file ${fileMetadata.fileId}`);
-            float[][]|error allEmbeddings = getEmbeddings(contents);
-            if (allEmbeddings is error) {
-                log:printError(`processDocuments: Error getting embeddings for file ${fileMetadata.fileId}`);
-                return error("Failed to get embeddings");
-            }
-            log:printInfo(`processDocuments: Embeddings retrieved for file ${fileMetadata.fileId}`);
-
-            foreach MarkdownChunk chunk in chunks {
-                VectorDataWithId|error vectors = addVectorEntry(
-                        allEmbeddings[chunk.chunkIndex],
-                        chunk.metadata.webViewLink ?: "",
-                        chunk,
-                        driveCollectionName
-                );
-                if (vectors is error) {
-                    log:printError(`processDocuments: Error adding vector for chunk ${chunk.chunkIndex} of file ${fileMetadata.fileId}`);
-                    return error("Failed to add vector entry");
-                }
-            }
-            log:printInfo(`processDocuments: Completed processing file ${fileMetadata.fileId}`);
-
-            result.success = true;
-            results.push(result);
+                errorMessage: res.message()
+            });
+            continue;
         }
+        results.push(res);
     }
 
     if results.length() > 0 {
@@ -123,6 +54,124 @@ public function processDocuments(stream<drive:File> documentStream) returns Proc
     } else {
         log:printWarn("processDocuments: No results were successfully processed");
         return error("No results found");
+    }
+}
+
+# Processes a single Google Drive file, extracting content, chunking, embedding, and storing vectors.
+#
+# + ch - Google Drive file to process.
+# + return - ProcessingResult for the processed file, or error if processing fails.
+public function processSingleDocument(drive:File ch) returns ProcessingResult|error {
+    DocumentMetadata metadata = {fileId: ch.id ?: ""};
+    log:printInfo(`processSingleDocument: Handling file ${metadata.fileId}`);
+
+    db:FileProcessingStatus|()|error prev = getFileStatus(metadata.fileId);
+    if prev is db:FileProcessingStatus && prev.status == STATUS_SUCCESS {
+        log:printInfo(`processSingleDocument: File ${metadata.fileId} has already been processed successfully`);
+        return {
+            fileId: metadata.fileId,
+            fileName: ch.name ?: "",
+            fileLink: ch.webViewLink ?: "",
+            success: true,
+            errorMessage: ()
+        };
+    }
+
+    check markProcessingStart(metadata.fileId);
+
+    if ch.trashed == true {
+        log:printWarn(`processSingleDocument: File ${metadata.fileId} is trashed. Deleting vectors.`);
+        int|error deletedCount = deleteExistingVectors(metadata, driveCollectionName);
+        if deletedCount is error {
+            log:printError(`processSingleDocument: Error deleting vectors for removed file ${metadata.fileId}`);
+            return error("Failed to delete vectors for removed file");
+        }
+        log:printInfo(`processSingleDocument: Deleted ${deletedCount} vectors for removed file ${metadata.fileId}`);
+        return {
+            fileId: metadata.fileId,
+            fileName: ch.name ?: "",
+            fileLink: ch.webViewLink ?: "",
+            success: true,
+            errorMessage: ()
+        };
+    } else {
+        log:printInfo(`processSingleDocument: Extracting metadata for file ${metadata.fileId}`);
+        DocumentMetadata|error fileMetadata = extractMetadata(metadata.fileId);
+        if fileMetadata is error {
+            log:printError(`processSingleDocument: Error extracting metadata for file ${metadata.fileId}`);
+            return error("Failed to extract metadata");
+        }
+        log:printDebug(`processSingleDocument: Metadata: ${fileMetadata.toJsonString()}`);
+
+        ProcessingResult result = {
+            fileId: fileMetadata.fileId,
+            fileName: fileMetadata.fileName ?: "",
+            fileLink: fileMetadata.webViewLink ?: "",
+            success: false,
+            errorMessage: ()
+        };
+
+        if fileMetadata.mimeType != mimeType {
+            log:printInfo(`processSingleDocument: Skipping non-Google-Doc file ${fileMetadata.fileId}`);
+            return error("File is not a Google Doc");
+        }
+
+        log:printInfo(`processSingleDocument: Extracting content for file ${fileMetadata.fileId}`);
+        string|error extractedContent = extractContent(fileMetadata.fileId, fileMetadata.fileName ?: "");
+        if extractedContent is error {
+            log:printError(`processSingleDocument: Error extracting content for file ${fileMetadata.fileId}`);
+            return error("Failed to extract content");
+        }
+        log:printDebug(`processSingleDocument: Extracted content length ${extractedContent.length()} for file ${fileMetadata.fileId}`);
+        log:printInfo(`processSingleDocument: Chunking content for file ${fileMetadata.fileId}`);
+        MarkdownChunk[] chunks = chunkMarkdownText(extractedContent, fileMetadata, MAX_TOKENS, OVERLAP_TOKENS);
+        log:printInfo(`processSingleDocument: Created ${chunks.length()} chunks for file ${fileMetadata.fileId}`);
+        log:printInfo(`processSingleDocument: Fetching existing vectors for file ${fileMetadata.fileId}`);
+        VectorDataWithId[]|error existing = fetchExistingVectors(fileMetadata, driveCollectionName);
+        if existing is error {
+            log:printError(`processSingleDocument: Error fetching existing vectors for file ${fileMetadata.fileId}`);
+            return error("Failed to fetch existing vectors");
+        }
+        if existing.length() > 0 {
+            log:printWarn(`processSingleDocument: Found ${existing.length()} existing vectors. Deleting.`);
+            int|error deletedCount2 = deleteExistingVectors(fileMetadata, driveCollectionName);
+            if deletedCount2 is error {
+                log:printError(`processSingleDocument: Error deleting existing vectors for file ${fileMetadata.fileId}`);
+                return error("Failed to delete existing vectors");
+            }
+            log:printInfo(`processSingleDocument: Deleted ${deletedCount2} existing vectors for file ${fileMetadata.fileId}`);
+        }
+
+        string[] contents = [];
+        foreach MarkdownChunk chunk in chunks {
+            contents.push(chunk.content);
+        }
+
+        log:printInfo(`processSingleDocument: Retrieving embeddings for file ${fileMetadata.fileId}`);
+        float[][]|error allEmbeddings = getEmbeddings(contents);
+        if allEmbeddings is error {
+            log:printError(`processSingleDocument: Error getting embeddings for file ${fileMetadata.fileId}`);
+            return error("Failed to get embeddings");
+        }
+        log:printInfo(`processSingleDocument: Embeddings retrieved for file ${fileMetadata.fileId}`);
+
+        foreach MarkdownChunk chunk in chunks {
+            VectorDataWithId|error vectors = addVectorEntry(
+                    allEmbeddings[chunk.chunkIndex],
+                    chunk.metadata.webViewLink ?: "",
+                    chunk,
+                    driveCollectionName
+            );
+            if vectors is error {
+                log:printError(`processSingleDocument: Error adding vector for chunk ${chunk.chunkIndex} of file ${fileMetadata.fileId}`);
+                return error("Failed to add vector entry");
+            }
+        }
+        log:printInfo(`processSingleDocument: Completed processing file ${fileMetadata.fileId}`);
+
+        result.success = true;
+        check markProcessingSuccess(fileMetadata.fileId);
+        return result;
     }
 }
 
@@ -174,7 +223,7 @@ public function retrieveUpdatedDocuments(string[] searchTerms) returns stream<dr
 public function extractMetadata(string fileId) returns DocumentMetadata|error {
     log:printInfo(`extractMetadata: Retrieving metadata for file ${fileId}`);
     drive:File|error file = driveClient->getFile(fileId, fields = "id,name,mimeType,createdTime,webViewLink");
-    if (file is error) {
+    if file is error {
         log:printError(`extractMetadata: Failed to retrieve file ${fileId}`);
         return error("Failed to retrieve file: " + fileId);
     }
@@ -197,7 +246,7 @@ public function extractMetadata(string fileId) returns DocumentMetadata|error {
 public function extractContent(string fileId, string fileName) returns string|error {
     log:printInfo(`extractContent: Exporting file ${fileId} as markdown`);
     drive:FileContent|error content = driveClient->exportFile(fileId, mimeType = "text/markdown");
-    if (content is error) {
+    if content is error {
         log:printError(`extractContent: Failed export for file ${fileId}`);
         return error("Failed to extract content");
     }
@@ -213,7 +262,7 @@ public function extractContent(string fileId, string fileName) returns string|er
 # + maxTokens - Maximum tokens per chunk (default 400).
 # + overlapTokens - Number of overlapping tokens between chunks (default 50).
 # + return - Array of MarkdownChunk objects.
-public function chunkMarkdownText(string markdownText, DocumentMetadata metadata, int maxTokens = 400, int overlapTokens = 50) returns MarkdownChunk[] {
+public function chunkMarkdownText(string markdownText, DocumentMetadata metadata, int maxTokens, int overlapTokens) returns MarkdownChunk[] {
     log:printInfo(`chunkMarkdownText: Starting chunking for file ${metadata.fileId}`);
     string[] lines = regex:split(markdownText, "\n");
     MarkdownSection[] sections = gatherSections(lines);
@@ -281,16 +330,14 @@ function createSubChunks(DocumentMetadata metadata, string[] paragraphs, string 
     MarkdownChunk[] chunks = [];
     string[] currentWords = [];
     int currentWordCount = 0;
-    int indexCounter = 0;
 
     foreach string paragraph in paragraphs {
         string[] paragraphWords = regex:split(paragraph, "\\s+");
         int paragraphLen = paragraphWords.length();
         if currentWordCount + paragraphLen > maxTokens {
-            string chunkText = string:'join(" ", ...currentWords).trim();
+            string chunkText = string:'join("\n", ...currentWords).trim();
             if chunkText != "" {
-                chunks.push({heading: headingText, headingLevel: headingLevel, content: chunkText, metadata: metadata, chunkIndex: indexCounter});
-                indexCounter += 1;
+                chunks.push({heading: headingText, headingLevel: headingLevel, content: chunkText, metadata: metadata, chunkIndex: 0});
             }
             string[] overlapSlice = [];
             if overlapTokens > 0 && currentWords.length() > overlapTokens {
@@ -305,7 +352,7 @@ function createSubChunks(DocumentMetadata metadata, string[] paragraphs, string 
         }
     }
     if currentWords.length() > 0 {
-        chunks.push({heading: headingText, headingLevel: headingLevel, content: string:'join(" ", ...currentWords).trim(), metadata: metadata, chunkIndex: indexCounter});
+        chunks.push({heading: headingText, headingLevel: headingLevel, content: string:'join("\n", ...currentWords).trim(), metadata: metadata, chunkIndex: 0});
     }
     log:printDebug(`createSubChunks: Created ${chunks.length()} subchunks for heading '${headingText}'`);
     return chunks;
@@ -459,10 +506,9 @@ public function saveInitialToken() returns int|error {
 # + return - Token object or error.
 public function getToken() returns db:Token|error {
     log:printInfo("getToken: Retrieving latest token record");
-    int id = 2;
-    db:Token|error token = dbClient->/tokens/[id].get();
+    db:Token|error token = dbClient->/tokens/[LATEST_TOKEN_ID].get();
     if token is error {
-        log:printError(`getToken: Failed to retrieve token with ID ${id}`);
+        log:printError(`getToken: Failed to retrieve token with ID ${LATEST_TOKEN_ID}`);
         return error("Failed to retrieve token");
     }
     return token;
@@ -474,14 +520,111 @@ public function getToken() returns db:Token|error {
 public function updateToken() returns string|error {
     log:printInfo("updateToken: Updating drive start page token");
     string token = check driveClient->getStartPageToken();
-    int latestTokenId = 2;
-    int previousTokenId = 1;
-    db:Token existingToken = check dbClient->/tokens/[latestTokenId].get();
+    db:Token existingToken = check dbClient->/tokens/[LATEST_TOKEN_ID].get();
     db:TokenUpdate previousToken = {token: existingToken.token, updatedAt: time:utcNow()};
-    log:printInfo(`updateToken: Archiving previous token (ID ${previousTokenId})`);
-    db:Token _ = check dbClient->/tokens/[previousTokenId].put(previousToken);
+    log:printInfo(`updateToken: Archiving previous token (ID ${LATEST_TOKEN_ID - 1})`);
+    db:Token _ = check dbClient->/tokens/[LATEST_TOKEN_ID - 1].put(previousToken);
     db:TokenUpdate latestToken = {token: token, updatedAt: time:utcNow()};
-    log:printInfo(`updateToken: Saving new token (ID ${latestTokenId})`);
-    db:Token updatedLatestToken = check dbClient->/tokens/[latestTokenId].put(latestToken);
+    log:printInfo(`updateToken: Saving new token (ID ${LATEST_TOKEN_ID})`);
+    db:Token updatedLatestToken = check dbClient->/tokens/[LATEST_TOKEN_ID].put(latestToken);
     return updatedLatestToken.token;
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+//  Idempotent processing‑state helpers
+// ──────────────────────────────────────────────────────────────────────────────
+
+# Retrieves processing status for a single file. Returns () if the file has
+# never been seen before.
+#
+# + fileId - parameter description
+# + return - return value description
+public function getFileStatus(string fileId) returns db:FileProcessingStatus|()|error {
+
+    db:FileProcessingStatus|error st = dbClient->/fileprocessingstatuses/[fileId]();
+    if st is error {
+        // A 404 means "not found" – treat as unseen file, not as failure
+        if st.message().startsWith("404") {
+            return ();
+        }
+        return st; // real DB error
+    }
+    return st;
+}
+
+# Inserts or updates a status row in a single DB call (PostgreSQL `UPSERT`).
+#
+# + st - The file processing status to upsert.
+# + return - error if the upsert fails.
+public function upsertFileStatus(db:FileProcessingStatus st) returns error? {
+    log:printInfo(`upsertFileStatus: Upserting file processing status for file ${st.fileId}`);
+    db:FileProcessingStatusUpdate upd = {
+        status: st.status,
+        errorMessage: st.errorMessage,
+        updatedAt: st.updatedAt,
+        createdAt: st.createdAt // will be ignored by UPDATE branch
+    };
+
+    // 1️⃣  Attempt to UPDATE (PUT) first
+    db:FileProcessingStatus|persist:Error putErr = dbClient->/fileprocessingstatuses/[st.fileId].put(upd);
+
+    if putErr is persist:NotFoundError {
+        // 404 means row not found – switch to INSERT
+        db:FileProcessingStatusInsert ins = {
+                fileId: st.fileId,
+                status: st.status,
+                errorMessage: st.errorMessage,
+                createdAt: st.createdAt,
+                updatedAt: st.updatedAt
+            };
+
+        // 2️⃣  INSERT (POST) will create the row
+        _ = check dbClient->/fileprocessingstatuses.post([ins]);
+        return;
+    }
+
+    return (); // success via UPDATE branch
+}
+
+// Convenience wrappers --------------------------------------------------------
+# Description.
+#
+# + fileId - parameter description
+# + return - return value description
+public function markProcessingStart(string fileId) returns ()|error {
+    log:printInfo(`markProcessingStart: Marking file ${fileId} as processing`);
+    db:FileProcessingStatus st = {
+        fileId: fileId,
+        status: STATUS_PROCESSING,
+        errorMessage: "",
+        createdAt: time:utcNow(),
+        updatedAt: time:utcNow()
+    };
+    return upsertFileStatus(st);
+}
+
+public function markProcessingSuccess(string fileId) returns ()|error {
+    db:FileProcessingStatus st = {
+        fileId: fileId,
+        status: STATUS_SUCCESS,
+        errorMessage: "",
+        updatedAt: time:utcNow(),
+        createdAt: ()};
+    return upsertFileStatus(st);
+}
+
+# Description.
+#
+# + fileId - parameter description  
+# + msg - parameter description
+# + return - return value description
+public function markProcessingError(string fileId, string msg) returns ()|error {
+    db:FileProcessingStatus st = {
+        fileId: fileId,
+        status: STATUS_ERROR,
+        errorMessage: msg,
+        updatedAt: time:utcNow(),
+        createdAt: ()
+    };
+    return upsertFileStatus(st);
 }
