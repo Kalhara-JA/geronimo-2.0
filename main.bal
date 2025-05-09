@@ -21,7 +21,7 @@ class Job {
             return;
         }
         log:printInfo("Job: Retrieved updated documents from Google Drive");
-        ProcessingResult[]|error results = processDocuments(documentStream);
+        ProcessingResult[]|error results = processDocuments(documentStream, true);
         if (results is error) {
             log:printError("Job: Error processing documents", results);
             return;
@@ -50,7 +50,7 @@ service /vectorize on httpDefaultListener {
         stream<drive:File> documentStream = check retrieveAllDocuments(["attendees", "Invited"]);
         log:printInfo("POST /vectorize/init: Documents retrieved from Google Drive");
 
-        ProcessingResult[]|error results = processDocuments(documentStream);
+        ProcessingResult[]|error results = processDocuments(documentStream, false);
         if (results is error) {
             log:printError("POST /vectorize/init: Error processing documents", results);
             return error("Failed to process documents");
@@ -66,39 +66,39 @@ service /vectorize on httpDefaultListener {
         };
 
         return response;
-        
+
     }
 
     // # Processes only updated documents and updates the token.
     // #
     // # + return - A JSON response with processing results or an error.
-    // resource function post changes() returns error|json {
-    //     log:printInfo("POST /vectorize/changes: Retrieving updated documents from Google Drive");
-    //     stream<drive:File>|error documentStream = retrieveUpdatedDocuments(["attendees", "Invited"]);
-    //     if (documentStream is error) {
-    //         log:printError("POST /vectorize/changes: Error retrieving documents from Google Drive", documentStream);
-    //         return error("Failed to retrieve documents");
-    //     }
-    //     log:printInfo("POST /vectorize/changes: Documents retrieved from Google Drive");
+    resource function post changes() returns error|json {
+        log:printInfo("POST /vectorize/changes: Retrieving updated documents from Google Drive");
+        stream<drive:File>|error documentStream = retrieveUpdatedDocuments(["attendees", "Invited"]);
+        if (documentStream is error) {
+            log:printError("POST /vectorize/changes: Error retrieving documents from Google Drive", documentStream);
+            return error("Failed to retrieve documents");
+        }
+        log:printInfo("POST /vectorize/changes: Documents retrieved from Google Drive");
 
-    //     ProcessingResult[]|error results = processDocuments(documentStream);
-    //     if (results is error) {
-    //         log:printError("POST /vectorize/changes: Error processing documents", results);
-    //         return;
-    //     }
-    //     log:printInfo(`POST /vectorize/changes: Documents processed successfully. Results count: ${results.length()}`);
+        ProcessingResult[]|error results = processDocuments(documentStream, true);
+        if (results is error) {
+            log:printError("POST /vectorize/changes: Error processing documents", results);
+            return;
+        }
+        log:printInfo(`POST /vectorize/changes: Documents processed successfully. Results count: ${results.length()}`);
 
-    //     string|error updatedToken = updateToken();
-    //     if (updatedToken is error) {
-    //         log:printError("POST /vectorize/changes: Error updating token", updatedToken);
-    //         return error("Failed to update token");
-    //     }
-    //     log:printInfo(`POST /vectorize/changes: Token updated successfully: ${updatedToken}`);
+        string|error updatedToken = updateToken();
+        if (updatedToken is error) {
+            log:printError("POST /vectorize/changes: Error updating token", updatedToken);
+            return error("Failed to update token");
+        }
+        log:printInfo(`POST /vectorize/changes: Token updated successfully: ${updatedToken}`);
 
-    //     json response = {
-    //         message: "Documents processed successfully",
-    //         results: results
-    //     };
-    //     return response;
-    // }
+        json response = {
+            message: "Documents processed successfully",
+            results: results
+        };
+        return response;
+    }
 }

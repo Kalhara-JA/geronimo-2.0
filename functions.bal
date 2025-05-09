@@ -1,5 +1,6 @@
 import geronimo_2_0.db;
 
+import ballerina/lang.runtime;
 import ballerina/lang.value;
 import ballerina/log;
 import ballerina/persist;
@@ -15,39 +16,37 @@ public const string STATUS_PROCESSING = "processing";
 public const string STATUS_SUCCESS = "success";
 public const string STATUS_ERROR = "error";
 
+public const int EMBEDDING_BATCH_SIZE = 100;
+
 # Processes a stream of Google Drive files, extracting content, chunking, embedding, and storing vectors.
 #
 # + documentStream - Stream of Google Drive files to process.
+# + force - Flag to force processing even if already processed.
 # + return - Array of ProcessingResult for each processed file, or error if processing fails.
-public function processDocuments(stream<drive:File> documentStream) returns ProcessingResult[]|error {
+public function processDocuments(stream<drive:File> documentStream, boolean force) returns ProcessingResult[]|error {
     log:printInfo("processDocuments: Start processing document stream");
 
     ProcessingResult[] results = [];
-    drive:File[] changesList = from drive:File ch in documentStream
-        select ch;
-    log:printDebug(`processDocuments: Retrieved ${changesList.length()} files from stream`);
-
-    if changesList.length() == 0 {
-        log:printInfo("processDocuments: No changes found in Google Drive");
-        return results;
-    }
-
-    foreach drive:File ch in changesList {
-        ProcessingResult|error res = processSingleDocument(ch);
+    // drive:File? file = documentStream.next();
+    int count = 0;
+    foreach drive:File file in documentStream {
+        count += 1;
+        ProcessingResult|error res = processSingleDocument(file, force);
         if res is error {
-            check markProcessingError(ch.id ?: "", res.message());
+            check markProcessingError(file.id ?: "", res.message());
             results.push({
-                fileId: ch.id ?: "",
-                fileName: ch.name ?: "",
-                fileLink: ch.webViewLink ?: "",
+                fileId: file.id ?: "",
+                fileName: file.name ?: "",
+                fileLink: file.webViewLink ?: "",
                 success: false,
                 errorMessage: res.message()
             });
-            continue;
+        } else {
+            results.push(res);
         }
-        results.push(res);
+        // file = documentStream.next();
     }
-
+    log:printDebug(`processDocuments: Retrieved ${count} files from stream`);
     if results.length() > 0 {
         log:printInfo(`processDocuments: Finished with ${results.length()} successful results`);
         return results;
@@ -60,13 +59,14 @@ public function processDocuments(stream<drive:File> documentStream) returns Proc
 # Processes a single Google Drive file, extracting content, chunking, embedding, and storing vectors.
 #
 # + ch - Google Drive file to process.
+# + force - Flag to force processing even if already processed.
 # + return - ProcessingResult for the processed file, or error if processing fails.
-public function processSingleDocument(drive:File ch) returns ProcessingResult|error {
+public function processSingleDocument(drive:File ch, boolean force) returns ProcessingResult|error {
     DocumentMetadata metadata = {fileId: ch.id ?: ""};
     log:printInfo(`processSingleDocument: Handling file ${metadata.fileId}`);
 
     db:FileProcessingStatus|()|error prev = getFileStatus(metadata.fileId);
-    if prev is db:FileProcessingStatus && prev.status == STATUS_SUCCESS {
+    if !force && prev is db:FileProcessingStatus && prev.status == STATUS_SUCCESS {
         log:printInfo(`processSingleDocument: File ${metadata.fileId} has already been processed successfully`);
         return {
             fileId: metadata.fileId,
@@ -126,12 +126,27 @@ public function processSingleDocument(drive:File ch) returns ProcessingResult|er
         log:printInfo(`processSingleDocument: Chunking content for file ${fileMetadata.fileId}`);
         MarkdownChunk[] chunks = chunkMarkdownText(extractedContent, fileMetadata, MAX_TOKENS, OVERLAP_TOKENS);
         log:printInfo(`processSingleDocument: Created ${chunks.length()} chunks for file ${fileMetadata.fileId}`);
+
+        string[] contents = [];
+        foreach MarkdownChunk chunk in chunks {
+            contents.push(chunk.content);
+        }
+
+        log:printInfo(`processSingleDocument: Retrieving embeddings for file ${fileMetadata.fileId}`);
+        float[][]|error allEmbeddings = getEmbeddingsBatched(contents);
+        if allEmbeddings is error {
+            log:printError(`processSingleDocument: Error getting embeddings for file ${fileMetadata.fileId}`);
+            return error("Failed to get embeddings");
+        }
+        log:printInfo(`processSingleDocument: Embeddings retrieved for file ${fileMetadata.fileId}`);
+
         log:printInfo(`processSingleDocument: Fetching existing vectors for file ${fileMetadata.fileId}`);
         VectorDataWithId[]|error existing = fetchExistingVectors(fileMetadata, driveCollectionName);
         if existing is error {
             log:printError(`processSingleDocument: Error fetching existing vectors for file ${fileMetadata.fileId}`);
             return error("Failed to fetch existing vectors");
         }
+
         if existing.length() > 0 {
             log:printWarn(`processSingleDocument: Found ${existing.length()} existing vectors. Deleting.`);
             int|error deletedCount2 = deleteExistingVectors(fileMetadata, driveCollectionName);
@@ -141,19 +156,6 @@ public function processSingleDocument(drive:File ch) returns ProcessingResult|er
             }
             log:printInfo(`processSingleDocument: Deleted ${deletedCount2} existing vectors for file ${fileMetadata.fileId}`);
         }
-
-        string[] contents = [];
-        foreach MarkdownChunk chunk in chunks {
-            contents.push(chunk.content);
-        }
-
-        log:printInfo(`processSingleDocument: Retrieving embeddings for file ${fileMetadata.fileId}`);
-        float[][]|error allEmbeddings = getEmbeddings(contents);
-        if allEmbeddings is error {
-            log:printError(`processSingleDocument: Error getting embeddings for file ${fileMetadata.fileId}`);
-            return error("Failed to get embeddings");
-        }
-        log:printInfo(`processSingleDocument: Embeddings retrieved for file ${fileMetadata.fileId}`);
 
         foreach MarkdownChunk chunk in chunks {
             VectorDataWithId|error vectors = addVectorEntry(
@@ -167,6 +169,7 @@ public function processSingleDocument(drive:File ch) returns ProcessingResult|er
                 return error("Failed to add vector entry");
             }
         }
+
         log:printInfo(`processSingleDocument: Completed processing file ${fileMetadata.fileId}`);
 
         result.success = true;
@@ -185,6 +188,7 @@ public function retrieveAllDocuments(string[] searchTerms) returns stream<drive:
     string[] searchFilters = searchTerms.map(term => "fullText contains '" + term + "'");
     string searchFilter = string `${string:'join(" or ", ...searchFilters)}`;
     string filterString = "'" + folderId + "' in parents and " + searchFilter + " and mimeType = '" + mimeType + "'";
+    log:printInfo(`retrieveAllDocuments: Filter string: ${filterString}`);
 
     log:printDebug(`retrieveAllDocuments: Filter string: ${filterString}`);
     return driveClient->getAllFiles(filterString);
@@ -264,7 +268,13 @@ public function extractContent(string fileId, string fileName) returns string|er
 # + return - Array of MarkdownChunk objects.
 public function chunkMarkdownText(string markdownText, DocumentMetadata metadata, int maxTokens, int overlapTokens) returns MarkdownChunk[] {
     log:printInfo(`chunkMarkdownText: Starting chunking for file ${metadata.fileId}`);
-    string[] lines = regex:split(markdownText, "\n");
+
+    string regex1 = "!\\[.*?\\]\\[.*?\\]";
+    string regex2 = "\\[image\\d+\\]:\\s*<data:[^>]*>";
+    string markdowntext1 = regex:replaceAll(markdownText, regex1, "");
+    string markdownText2 = regex:replaceAll(markdowntext1, regex2, "");
+
+    string[] lines = regex:split(markdownText2, "\n");
     MarkdownSection[] sections = gatherSections(lines);
     log:printDebug(`chunkMarkdownText: Found ${sections.length()} sections`);
     MarkdownChunk[] allChunks = [];
@@ -393,6 +403,28 @@ public function getEmbeddings(string[] chunks) returns float[][]|error {
     }
     log:printInfo(`getEmbeddings: Received embeddings for ${allEmbeddings.length()} chunks`);
     return allEmbeddings;
+}
+
+# Gets embeddings for an array of text chunks in batches.
+#
+# + allContents - Array of text chunks to embed.
+# + return - 2D array of floats representing embeddings, or error.
+function getEmbeddingsBatched(string[] allContents)
+        returns float[][]|error {
+
+    float[][] embeddings = [];
+    int i = 0;
+    while i < allContents.length() {
+        int end = i + EMBEDDING_BATCH_SIZE < allContents.length() ? i + EMBEDDING_BATCH_SIZE : allContents.length();
+        float[][]|error batch = getEmbeddings(allContents.slice(i, end));
+        if batch is error {
+            return batch;
+        }
+        embeddings.push(...batch);
+        i = end;
+        runtime:sleep(1);
+    }
+    return embeddings;
 }
 
 # Fetches existing vectors for a document from the vector store.
@@ -609,7 +641,7 @@ public function markProcessingSuccess(string fileId) returns ()|error {
         status: STATUS_SUCCESS,
         errorMessage: "",
         updatedAt: time:utcNow(),
-        createdAt: ()};
+        createdAt: time:utcNow()};
     return upsertFileStatus(st);
 }
 
@@ -624,7 +656,7 @@ public function markProcessingError(string fileId, string msg) returns ()|error 
         status: STATUS_ERROR,
         errorMessage: msg,
         updatedAt: time:utcNow(),
-        createdAt: ()
+        createdAt: time:utcNow()
     };
     return upsertFileStatus(st);
 }
